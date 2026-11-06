@@ -2,22 +2,16 @@
 //
 // The Kotlin reads MediaStore directly (IS_MUSIC != 0, sorted by title
 // COLLATE NOCASE) and asks for the runtime permission only when the user
-// turns the source on. This port reads the device library through
-// on_audio_query instead. Two honest differences that follow from that:
+// turns the source on. This port does the same through the native
+// `upze/media` channel (MediaBridge.kt) — the on_audio_query plugin it
+// first used is unmaintained and its Android library has no AGP-8
+// namespace, which fails modern Gradle builds.
 //
-//  * PERMISSIONS: on_audio_query 2.9 predates the Android 13+ per-media
-//    permission model — its own permission helpers target the old
-//    READ_EXTERNAL_STORAGE world. The Kotlin picks READ_MEDIA_AUDIO on
-//    API 33+ and READ_EXTERNAL_STORAGE below it (see [LocalSource.permissionForSdk]).
-//    This port does NOT request anything: the caller grants the right
-//    permission (e.g. via permission_handler) and reports it through the
-//    `hasPermission` constructor callback; [available] mirrors the Kotlin's
-//    `enabled() && hasPermission()`.
-//  * FIELDS: the plugin exposes the file extension, not the MIME type, and
-//    has no year column — [LocalSource.formatOfMime] is the Kotlin's exact
-//    MIME mapping kept for parity, scan() maps the extension the same way,
-//    and year is read opportunistically from the plugin's raw row map when
-//    present. The Kotlin's "album art" content URI is rebuilt identically.
+// PERMISSIONS: this port does NOT request anything: the caller grants
+// the right permission (via permission_handler — READ_MEDIA_AUDIO on
+// API 33+, READ_EXTERNAL_STORAGE below; see [LocalSource.permissionForSdk])
+// and reports it through the `hasPermission` constructor callback;
+// [available] mirrors the Kotlin's `enabled() && hasPermission()`.
 //
 // Search uses a local copy of logic/SearchFilter (Logic.kt) — there is no
 // Dart port of Logic.kt yet. Its accent folding is approximated (dart:core
@@ -25,7 +19,7 @@
 // common precomposed Latin accents fold to their base letter, everything
 // else follows the Kotlin's rules exactly.
 
-import 'package:on_audio_query/on_audio_query.dart';
+import 'package:flutter/services.dart';
 
 import '../models/track.dart';
 import 'music_source.dart';
@@ -34,14 +28,13 @@ class LocalSource implements MusicSource {
   LocalSource({
     required bool Function() enabled,
     required bool Function() hasPermission,
-    OnAudioQuery? audioQuery,
   })  : _enabled = enabled,
-        _hasPermission = hasPermission,
-        _audioQuery = audioQuery ?? OnAudioQuery();
+        _hasPermission = hasPermission;
+
+  static const _channel = MethodChannel('upze/media');
 
   final bool Function() _enabled;
   final bool Function() _hasPermission;
-  final OnAudioQuery _audioQuery;
 
   List<Track> _tracks = const [];
 
@@ -64,50 +57,37 @@ class LocalSource implements MusicSource {
   /// treated as "no tracks", like the Kotlin's guarded cursor query.
   Future<List<Track>> scan() async {
     if (!_hasPermission()) return const [];
-    final List<SongModel> songs;
+    final List<dynamic> rows;
     try {
-      songs = await _audioQuery.querySongs(
-        sortType: SongSortType.TITLE,
-        orderType: OrderType.ASC_OR_SMALLER,
-        uriType: UriType.EXTERNAL,
-        ignoreCase: true,
-      );
+      rows = await _channel.invokeMethod<List<dynamic>>('songs') ?? const [];
     } catch (_) {
       _tracks = const [];
       return _tracks;
     }
     final out = <Track>[];
-    for (final s in songs) {
-      // Kotlin filters IS_MUSIC != 0; keep rows the plugin doesn't flag.
-      if (s.isMusic == false) continue;
-      final albumId = s.albumId;
+    for (final row in rows) {
+      if (row is! Map) continue;
+      final id = (row['id'] as num?)?.toInt();
+      if (id == null) continue;
+      final artist = row['artist'] as String?;
+      final albumId = (row['albumId'] as num?)?.toInt();
+      final year = (row['year'] as num?)?.toInt() ?? 0;
       out.add(Track(
-        id: 'local:${s.id}',
-        title: s.title,
-        artist: (s.artist == null || s.artist == '<unknown>') ? '' : s.artist!,
-        album: s.album,
-        durationMs: s.duration ?? 0,
+        id: 'local:$id',
+        title: (row['title'] as String?) ?? '',
+        artist: (artist == null || artist == '<unknown>') ? '' : artist,
+        album: row['album'] as String?,
+        durationMs: (row['duration'] as num?)?.toInt() ?? 0,
         artUrl: albumId == null
             ? null
             : 'content://media/external/audio/albumart/$albumId',
         albumId: albumId == null ? null : 'local:al:$albumId',
-        year: _yearOf(s),
-        format: _formatOfExtension(s.fileExtension),
+        year: year > 0 ? year.toString() : null,
+        format: formatOfMime((row['mime'] as String?) ?? ''),
       ));
     }
     _tracks = out;
     return out;
-  }
-
-  static String? _yearOf(SongModel s) {
-    // Not a typed plugin field; present in the raw row on some versions.
-    try {
-      final y = s.getMap['year'];
-      if (y is num && y > 0) return y.toInt().toString();
-    } catch (_) {
-      // fall through
-    }
-    return null;
   }
 
   @override
@@ -157,23 +137,6 @@ class LocalSource implements MusicSource {
     if (mime.contains('ogg') || mime.contains('opus')) return 'ogg';
     final after = mime.contains('/') ? mime.substring(mime.indexOf('/') + 1) : mime;
     return after.isEmpty ? null : after;
-  }
-
-  /// Extension → format, following [formatOfMime]'s buckets (the plugin
-  /// reports the extension, not the MIME type).
-  static String? _formatOfExtension(String ext) {
-    final e = ext.toLowerCase().replaceFirst('.', '');
-    return switch (e) {
-      'flac' => 'flac',
-      'wav' => 'wav',
-      'alac' => 'alac',
-      'aiff' || 'aif' => 'aiff',
-      'mp3' => 'mp3',
-      'm4a' || 'aac' || 'mp4' => 'm4a',
-      'ogg' || 'opus' => 'ogg',
-      '' => null,
-      _ => e,
-    };
   }
 }
 

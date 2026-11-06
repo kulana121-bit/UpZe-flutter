@@ -42,6 +42,21 @@ class MainActivity : FlutterActivity() {
             }
         }
 
+        MethodChannel(messenger, "upze/media").setMethodCallHandler { call, result ->
+            when (call.method) {
+                "songs" -> {
+                    // MediaStore query can block on large libraries; keep it
+                    // off the platform thread.
+                    Thread {
+                        val rows = runCatching { MediaBridge.songs(this) }
+                            .getOrDefault(emptyList())
+                        runOnUiThread { result.success(rows) }
+                    }.start()
+                }
+                else -> result.notImplemented()
+            }
+        }
+
         MethodChannel(messenger, "upze/installer").setMethodCallHandler { call, result ->
             when (call.method) {
                 "canInstall" -> result.success(canInstallPackages())
