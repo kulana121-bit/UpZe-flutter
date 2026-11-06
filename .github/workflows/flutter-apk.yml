@@ -1,0 +1,95 @@
+# UpZe Flutter — debug APK build (GitHub Actions)
+#
+# What this is: the first Actions build for the Flutter rewrite
+# (14,903 lines Dart, verified on the VM with Flutter 3.35.1:
+# `flutter analyze` clean, boot test pass — see REWRITE_MAP.md).
+# It builds a DEBUG APK, so no keystore or signing secrets are needed.
+# A debug APK installs fine on Ravi's phone for testing.
+#
+# How to use (phone-friendly, 2 steps):
+#   1. Push the Flutter project to a GitHub repo (e.g. a new repo,
+#      or a `flutter/` branch of kulana121-bit/UpZe-music).
+#      This file must end up at <repo>/.github/workflows/flutter-apk.yml
+#      — if the project is pushed inside an `upze_flutter/` subfolder,
+#      move this file to the repo-root .github/workflows/ folder and
+#      uncomment the `working-directory` line under `defaults:` below.
+#   2. GitHub repo page -> Actions tab -> "UpZe Flutter APK" -> Run workflow.
+#      When it finishes green, download `upze-flutter-debug-apk` from
+#      the run's Artifacts section and install app-debug.apk on the phone.
+#
+# Release (signed) builds come later and need Ravi's own keystore as
+# GitHub secrets — never committed to the repo. The commented block at
+# the bottom shows the exact step; leave it off until he says so.
+#
+# Known limits (from REWRITE_MAP.md, unchanged by this file):
+# - Accounts store (Subsonic/Jellyfin/Spotify/local) has no settings UI
+#   yet, so those sources stay off until that lands.
+# - APK install intent + home widget are still pending.
+# - EQ is the system-EQ approximation, not the Kotlin parametric DSP.
+
+name: UpZe Flutter APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "lib/**"
+      - "test/**"
+      - "pubspec.yaml"
+      - "pubspec.lock"
+      - "android/**"
+      - ".github/workflows/flutter-apk.yml"
+
+# If the Flutter project lives in a subfolder (e.g. upze_flutter/),
+# uncomment the next two lines and set the folder name:
+# defaults:
+#   run:
+#     working-directory: upze_flutter
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Flutter 3.35.1
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.35.1"
+          channel: stable
+          cache: true
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Analyse (must be clean, as on the VM)
+        run: flutter analyze
+
+      - name: Run tests (boot test)
+        run: flutter test
+
+      - name: Build debug APK
+        run: flutter build apk --debug
+
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: upze-flutter-debug-apk
+          path: build/app/outputs/flutter-apk/app-debug.apk
+          if-no-files-found: error
+
+  # --- Release build (OFF until Ravi says so) ---
+  # Needs these repo secrets (Settings -> Secrets and variables -> Actions):
+  #   ANDROID_KEYSTORE_BASE64 — his release keystore, base64-encoded
+  #   ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS, ANDROID_KEY_PASSWORD
+  # Then add a second job (or replace --debug above) that decodes the
+  # keystore, creates key.properties, and runs `flutter build apk --release`.
+  # The keystore itself must never be committed to the repo.

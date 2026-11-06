@@ -1,0 +1,48 @@
+name: Flutter Build
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.35.1'
+          channel: stable
+          cache: true
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Analyze
+        run: flutter analyze
+
+      - name: Test
+        run: flutter test
+
+      - name: Build debug APK
+        run: flutter build apk --debug
+
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: upze-debug-apk
+          path: build/app/outputs/flutter-apk/app-debug.apk
+
+      # NOTE: This release APK is signed with the template's DEBUG keys
+      # (see android/app/build.gradle.kts). It is fine for testing, but real
+      # releases need Ravi's own keystore: store it as GitHub secrets and add
+      # a proper release signingConfig before shipping this APK anywhere.
+      - name: Build release APK (debug-signed template build)
+        run: flutter build apk --release
+
+      - name: Upload release APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: upze-release-apk
+          path: build/app/outputs/flutter-apk/app-release.apk
